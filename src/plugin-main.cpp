@@ -16,6 +16,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <obs-frontend-api.h>
 #include <util/platform.h>
 #include <plugin-support.h>
+#include "obs-websocket-api.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -61,6 +62,8 @@ struct Settings {
 
 Settings g_settings;
 QPointer<QCheckBox> g_dockCheck;
+QPointer<QLineEdit> g_activeEdit; /* name box of the rename window that is open now */
+obs_websocket_vendor g_vendor = nullptr;
 
 /* ------------------------------------------------------------ settings file */
 
@@ -200,6 +203,7 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 
 	auto *title = new QLabel(QStringLiteral("Type a name (it goes in front of the file name):"));
 	auto *edit = new QLineEdit;
+	g_activeEdit = edit;
 	auto *preview = new QLabel;
 	preview->setWordWrap(true);
 	auto *status = new QLabel;
@@ -308,6 +312,58 @@ void showDialogForLastRecording(bool allowTimeout)
 	showRenameDialog(path, allowTimeout);
 }
 
+/* ------------------------------------------------------------ add word (Stream Deck) */
+
+/* Appends a word after what is already typed, with a single space between. */
+bool addWordToActiveDialog(const QString &rawWord)
+{
+	if (!g_activeEdit)
+		return false;
+	const QString word = cleanName(rawWord);
+	if (word.isEmpty())
+		return true;
+
+	QString text = g_activeEdit->text();
+	while (!text.isEmpty() && text.back().isSpace())
+		text.chop(1);
+	text = text.isEmpty() ? word : text + QLatin1Char(' ') + word;
+
+	g_activeEdit->setText(text); /* also pauses the countdown */
+	g_activeEdit->setCursorPosition(int(text.size()));
+	if (QWidget *w = g_activeEdit->window()) {
+		w->raise();
+		w->activateWindow();
+	}
+	g_activeEdit->setFocus();
+	return true;
+}
+
+struct AddWordTask {
+	std::string word;
+	bool ok = false;
+};
+
+/* obs-websocket request "add_word" {"word": "invader"} -> {"ok": true/false}
+ * Runs on the websocket thread, so the work is handed to the OBS UI thread. */
+void onAddWordRequest(obs_data_t *request, obs_data_t *response, void *)
+{
+	const char *w = obs_data_get_string(request, "word");
+	AddWordTask task;
+	task.word = w ? w : "";
+
+	obs_queue_task(
+		OBS_TASK_UI,
+		[](void *param) {
+			auto *t = static_cast<AddWordTask *>(param);
+			t->ok = addWordToActiveDialog(QString::fromUtf8(t->word.c_str()));
+		},
+		&task, true);
+
+	obs_data_set_bool(response, "ok", task.ok);
+	if (!task.ok)
+		obs_data_set_string(response, "error", "No rename window is open");
+}
+
 /* ------------------------------------------------------------ settings dialog */
 
 void showSettingsDialog()
@@ -405,6 +461,17 @@ bool obs_module_load(void)
 
 	obs_log(LOG_INFO, "Recording Renamer loaded (version %s)", PLUGIN_VERSION);
 	return true;
+}
+
+void obs_module_post_load(void)
+{
+	g_vendor = obs_websocket_register_vendor("recording-renamer");
+	if (!g_vendor) {
+		obs_log(LOG_WARNING, "obs-websocket not available - Stream Deck buttons will not work");
+		return;
+	}
+	if (!obs_websocket_vendor_register_request(g_vendor, "add_word", onAddWordRequest, nullptr))
+		obs_log(LOG_WARNING, "Could not register the add_word request");
 }
 
 void obs_module_unload(void)
