@@ -165,6 +165,23 @@ void renameWithRetry(const QString &from, const QString &to, int attempt)
 	QTimer::singleShot(500, [from, to, attempt]() { renameWithRetry(from, to, attempt + 1); });
 }
 
+/* Moves the recording to the Recycle Bin, retrying while the file is locked. */
+void trashWithRetry(const QString &path, int attempt)
+{
+	if (!QFileInfo::exists(path) || QFile::moveToTrash(path)) {
+		obs_log(LOG_INFO, "Moved recording to the Recycle Bin: '%s'", path.toUtf8().constData());
+		return;
+	}
+	if (attempt >= 40) {
+		obs_log(LOG_WARNING, "Could not delete '%s'", path.toUtf8().constData());
+		QMessageBox::warning(mainWindow(), QStringLiteral("Recording Renamer"),
+				     QStringLiteral("Could not move\n%1\nto the Recycle Bin.\n\nThe file may be in use.")
+					     .arg(QFileInfo(path).fileName()));
+		return;
+	}
+	QTimer::singleShot(500, [path, attempt]() { trashWithRetry(path, attempt + 1); });
+}
+
 /* ------------------------------------------------------------ rename dialog */
 
 void showRenameDialog(const QString &path, bool allowTimeout = true)
@@ -192,14 +209,20 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 	buttons->addButton(QStringLiteral("Skip"), QDialogButtonBox::RejectRole);
 	save->setDefault(true);
 
+	auto *del = new QPushButton(QStringLiteral("Delete"));
+	del->setAutoDefault(false);
+	del->setToolTip(QStringLiteral("Move this recording to the Recycle Bin"));
+
 	auto *bottom = new QHBoxLayout;
-	bottom->addWidget(status, 1);
+	bottom->addWidget(del);
+	bottom->addStretch(1);
 	bottom->addWidget(buttons);
 
 	auto *layout = new QVBoxLayout(dlg);
 	layout->addWidget(title);
 	layout->addWidget(edit);
 	layout->addWidget(preview);
+	layout->addWidget(status);
 	layout->addSpacing(8);
 	layout->addLayout(bottom);
 
@@ -238,6 +261,18 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 			timer->stop();
 		updatePreview();
 		updateStatus();
+	});
+	QObject::connect(del, &QPushButton::clicked, dlg, [=]() {
+		timer->stop();
+		updateStatus();
+		const auto answer = QMessageBox::question(
+			dlg, QStringLiteral("Delete recording"),
+			QStringLiteral("Move this recording to the Recycle Bin?\n\n%1").arg(fi.fileName()),
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+		if (answer != QMessageBox::Yes)
+			return;
+		trashWithRetry(fi.absoluteFilePath(), 0);
+		dlg->reject(); /* reject = no rename */
 	});
 	QObject::connect(buttons, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
 	QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
