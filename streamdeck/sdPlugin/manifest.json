@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Recording Renamer",
+  "Version": "1.0.0.0",
+  "Author": "ZoliG1",
+  "Description": "Buttons that add words to the OBS Recording Renamer window.",
+  "Category": "Recording Renamer",
+  "CategoryIcon": "imgs/category",
+  "Icon": "imgs/plugin",
+  "URL": "https://github.com/ZoliG1/obs-recording-renamer",
+  "UUID": "com.zolig1.recordingrenamer",
+  "SDKVersion": 2,
+  "CodePath": "bin/plugin.js",
+  "Nodejs": { "Version": "20" },
+  "Software": { "MinimumVersion": "6.5" },
+  "OS": [
+    { "Platform": "windows", "MinimumVersion": "10" },
+    { "Platform": "mac", "MinimumVersion": "12" }
+  ],
+  "Actions": [
+    {
+      "UUID": "com.zolig1.recordingrenamer.addword",
+      "Name": "Add word",
+      "Tooltip": "Adds a word after the player name in the OBS rename window",
+      "Icon": "imgs/actions/addword/icon",
+      "PropertyInspectorPath": "ui/add-word.html",
+      "SupportedInMultiActions": true,
+      "Controllers": ["Keypad"],
+      "States": [
+        { "Image": "imgs/actions/addword/key", "TitleAlignment": "bottom", "FontSize": 14, "ShowTitle": true }
+      ]
+    }
+  ]
+}

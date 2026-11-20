@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 8px 10px; background: #2D2D2D; color: #D8D8D8;
+         font: 9pt "Segoe UI", -apple-system, sans-serif; }
+  .row { display: flex; align-items: center; margin-bottom: 8px; }
+  .row label { width: 96px; flex: none; text-align: right; padding-right: 10px; color: #969696; }
+  .row input { flex: 1; min-width: 0; background: #3D3D3D; color: #D8D8D8; border: 1px solid #3D3D3D;
+               border-radius: 3px; padding: 4px 6px; font: inherit; outline: none; }
+  .row input:focus { border-color: #5A9DF0; }
+  .hint { margin: -2px 0 10px 106px; color: #8A8A8A; font-size: 8pt; line-height: 1.35; }
+  h4 { margin: 14px 0 8px; font-size: 9pt; color: #BDBDBD; font-weight: 600; border-top: 1px solid #3D3D3D; padding-top: 10px; }
+</style>
+</head>
+<body>
+  <div class="row"><label for="word">Word</label><input id="word" placeholder="e.g. invader"></div>
+  <div class="hint">Added after the name you typed in the OBS rename window, with a space in between.</div>
+
+  <h4>OBS connection (shared by all buttons)</h4>
+  <div class="row"><label for="port">Port</label><input id="port" placeholder="4455"></div>
+  <div class="row"><label for="password">Password</label><input id="password" type="password" placeholder="OBS WebSocket password"></div>
+  <div class="hint">From OBS: Tools &rarr; WebSocket Server Settings &rarr; Show Connect Info.</div>
+
+<script>
+let ws, uuid, settings = {}, global = {};
+const $ = (id) => document.getElementById(id);
+const send = (o) => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+
+function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+  uuid = inUUID;
+  try { settings = JSON.parse(actionInfo).payload.settings || {}; } catch (e) {}
+  $("word").value = settings.word || "";
+
+  ws = new WebSocket("ws://127.0.0.1:" + port);
+  ws.onopen = () => {
+    send({ event: registerEvent, uuid });
+    send({ event: "getGlobalSettings", context: uuid });
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.event === "didReceiveGlobalSettings") {
+      global = (m.payload && m.payload.settings) || {};
+      $("port").value = global.port || "";
+      $("password").value = global.password || "";
+    } else if (m.event === "didReceiveSettings") {
+      settings = (m.payload && m.payload.settings) || {};
+    }
+  };
+}
+
+$("word").addEventListener("input", () => {
+  settings.word = $("word").value;
+  send({ event: "setSettings", context: uuid, payload: settings });
+});
+const saveGlobal = () => {
+  global.port = $("port").value.trim() || "4455";
+  global.password = $("password").value;
+  send({ event: "setGlobalSettings", context: uuid, payload: global });
+};
+$("port").addEventListener("change", saveGlobal);
+$("password").addEventListener("change", saveGlobal);
+</script>
+</body>
+</html>
