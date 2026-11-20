@@ -32,6 +32,10 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QPointer>
+#include <QIcon>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -185,6 +189,50 @@ void trashWithRetry(const QString &path, int attempt)
 	QTimer::singleShot(500, [path, attempt]() { trashWithRetry(path, attempt + 1); });
 }
 
+/* Removes the last word (and the space before it) from the name box. */
+void removeLastWord(QLineEdit *edit)
+{
+	QString text = edit->text();
+	while (!text.isEmpty() && text.back().isSpace())
+		text.chop(1);
+	const qsizetype cut = text.lastIndexOf(QLatin1Char(' '));
+	text = cut < 0 ? QString() : text.left(cut);
+	while (!text.isEmpty() && text.back().isSpace())
+		text.chop(1);
+	edit->setText(text);
+	edit->setCursorPosition(int(text.size()));
+	edit->setFocus();
+}
+
+/* Red U-turn "undo" arrow, drawn in code so it needs no image files. */
+QIcon undoIcon()
+{
+	QPixmap pm(64, 64);
+	pm.fill(Qt::transparent);
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing);
+	const QColor red(0xE5, 0x48, 0x4D);
+
+	QPainterPath path;
+	path.moveTo(20, 20);
+	path.lineTo(40, 20);
+	path.arcTo(QRectF(28, 20, 24, 24), 90, -180); /* round the right side */
+	path.lineTo(16, 44);
+	p.setPen(QPen(red, 7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.drawPath(path);
+
+	QPainterPath head; /* arrow head pointing left */
+	head.moveTo(4, 20);
+	head.lineTo(22, 7);
+	head.lineTo(22, 33);
+	head.closeSubpath();
+	p.setPen(QPen(red, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.setBrush(red);
+	p.drawPath(head);
+	p.end();
+	return QIcon(pm);
+}
+
 /* ------------------------------------------------------------ rename dialog */
 
 void showRenameDialog(const QString &path, bool allowTimeout = true)
@@ -217,9 +265,22 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 	del->setAutoDefault(false);
 	del->setToolTip(QStringLiteral("Move this recording to the Recycle Bin"));
 
+	auto *undo = new QPushButton;
+	undo->setIcon(undoIcon());
+	undo->setIconSize(QSize(28, 28));
+	undo->setAutoDefault(false);
+	undo->setFlat(true);
+	undo->setCursor(Qt::PointingHandCursor);
+	undo->setStyleSheet(QStringLiteral("QPushButton { border: none; background: transparent; padding: 2px 6px; }"
+					   "QPushButton:hover { background: rgba(255, 255, 255, 0.08); border-radius: 4px; }"
+					   "QPushButton:pressed { background: rgba(255, 255, 255, 0.15); }"));
+	undo->setToolTip(QStringLiteral("Remove the last word"));
+
 	auto *bottom = new QHBoxLayout;
 	bottom->addWidget(del);
 	bottom->addStretch(1);
+	bottom->addWidget(undo);
+	bottom->addSpacing(14);
 	bottom->addWidget(buttons);
 
 	auto *layout = new QVBoxLayout(dlg);
@@ -266,6 +327,7 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 		updatePreview();
 		updateStatus();
 	});
+	QObject::connect(undo, &QPushButton::clicked, dlg, [=]() { removeLastWord(edit); });
 	QObject::connect(del, &QPushButton::clicked, dlg, [=]() {
 		timer->stop();
 		updateStatus();
@@ -361,6 +423,31 @@ void onAddWordRequest(obs_data_t *request, obs_data_t *response, void *)
 
 	obs_data_set_bool(response, "ok", task.ok);
 	if (!task.ok)
+		obs_data_set_string(response, "error", "No rename window is open");
+}
+
+/* obs-websocket request "remove_word" {} -> {"ok": true/false} */
+void onRemoveWordRequest(obs_data_t *, obs_data_t *response, void *)
+{
+	bool ok = false;
+	obs_queue_task(
+		OBS_TASK_UI,
+		[](void *param) {
+			auto *result = static_cast<bool *>(param);
+			*result = false;
+			if (!g_activeEdit)
+				return;
+			removeLastWord(g_activeEdit);
+			if (QWidget *w = g_activeEdit->window()) {
+				w->raise();
+				w->activateWindow();
+			}
+			*result = true;
+		},
+		&ok, true);
+
+	obs_data_set_bool(response, "ok", ok);
+	if (!ok)
 		obs_data_set_string(response, "error", "No rename window is open");
 }
 
@@ -472,6 +559,8 @@ void obs_module_post_load(void)
 	}
 	if (!obs_websocket_vendor_register_request(g_vendor, "add_word", onAddWordRequest, nullptr))
 		obs_log(LOG_WARNING, "Could not register the add_word request");
+	if (!obs_websocket_vendor_register_request(g_vendor, "remove_word", onRemoveWordRequest, nullptr))
+		obs_log(LOG_WARNING, "Could not register the remove_word request");
 }
 
 void obs_module_unload(void)

@@ -1,6 +1,6 @@
 # Stream Deck plugin
 
-"Add word" buttons for the Recording Renamer window. Each button has its own word;
+"Add word" and "Remove last word" buttons for the Recording Renamer window. Each button has its own word;
 pressing it sends the word to OBS (obs-websocket vendor request `recording-renamer` / `add_word`).
 
 Build: `npm install && npx esbuild src/plugin.js --bundle --platform=node --target=node20 --outfile=sdPlugin/bin/plugin.js --external:bufferutil --external:utf-8-validate`,

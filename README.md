@@ -6,6 +6,7 @@ After you stop a recording, a small window asks for a name and puts it in front 
  - PS4 - 19.11.2026 19-48-55.mp4  ->  Johnny hack - PS4 - 19.11.2026 19-48-55.mp4
 ```
 
+- Red undo arrow = remove the last word (press again for the next one).
 - Delete = move the clip to the Recycle Bin (asks first).
 - Enter = save, Esc / Skip / timeout = keep the original name. Typing pauses the countdown.
 - **Scripts** dock with a checkbox to turn it on or off.

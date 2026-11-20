@@ -25,6 +25,8 @@ const REGISTER_EVENT = arg("-registerEvent");
 
 let globalSettings = { port: "4455", password: "" };
 const contexts = new Map(); // context -> settings
+const ACTION_ADD = "com.zolig1.recordingrenamer.addword";
+const ACTION_REMOVE = "com.zolig1.recordingrenamer.removeword";
 
 const sd = new WebSocket(`ws://127.0.0.1:${SD_PORT}`);
 const sdSend = (obj) => sd.readyState === WebSocket.OPEN && sd.send(JSON.stringify(obj));
@@ -44,7 +46,7 @@ sd.on("message", async (raw) => {
 	} catch (_) {
 		return;
 	}
-	const { event, context, payload } = msg;
+	const { event, context, payload, action } = msg;
 
 	switch (event) {
 		case "didReceiveGlobalSettings": {
@@ -57,13 +59,14 @@ sd.on("message", async (raw) => {
 		case "willAppear":
 		case "didReceiveSettings":
 			contexts.set(context, (payload && payload.settings) || {});
-			showWord(context);
+			if (action === ACTION_ADD) showWord(context);
 			break;
 		case "willDisappear":
 			contexts.delete(context);
 			break;
 		case "keyDown":
-			await onKeyDown(context, (payload && payload.settings) || contexts.get(context) || {});
+			if (action === ACTION_REMOVE) await sendToObs(context, "remove_word", {});
+			else await onKeyDown(context, (payload && payload.settings) || contexts.get(context) || {});
 			break;
 	}
 });
@@ -80,11 +83,15 @@ async function onKeyDown(context, settings) {
 		sdSend({ event: "showAlert", context });
 		return;
 	}
+	await sendToObs(context, "add_word", { word });
+}
+
+async function sendToObs(context, requestType, requestData) {
 	try {
 		const res = await obs.call("CallVendorRequest", {
 			vendorName: "recording-renamer",
-			requestType: "add_word",
-			requestData: { word },
+			requestType,
+			requestData,
 		});
 		const ok = res && res.responseData && res.responseData.ok;
 		sdSend({ event: ok ? "showOk" : "showAlert", context });

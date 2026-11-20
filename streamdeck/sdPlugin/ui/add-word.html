@@ -15,8 +15,11 @@
 </style>
 </head>
 <body>
+  <div id="wordBox">
   <div class="row"><label for="word">Word</label><input id="word" placeholder="e.g. invader"></div>
   <div class="hint">Added after the name you typed in the OBS rename window, with a space in between.</div>
+  </div>
+  <div id="removeBox" class="hint" style="margin-left:0;display:none">Removes the last word from the name in the OBS rename window. Press again to remove the next one.</div>
 
   <h4>OBS connection (shared by all buttons)</h4>
   <div class="row"><label for="port">Port</label><input id="port" placeholder="4455"></div>
@@ -30,7 +33,12 @@ const send = (o) => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
 
 function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
   uuid = inUUID;
-  try { settings = JSON.parse(actionInfo).payload.settings || {}; } catch (e) {}
+  let ai = {};
+  try { ai = JSON.parse(actionInfo); settings = ai.payload.settings || {}; } catch (e) {}
+  if (ai.action === "com.zolig1.recordingrenamer.removeword") {
+    $("wordBox").style.display = "none";
+    $("removeBox").style.display = "block";
+  }
   $("word").value = settings.word || "";
 
   ws = new WebSocket("ws://127.0.0.1:" + port);

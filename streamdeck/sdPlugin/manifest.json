@@ -1,9 +1,9 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Recording Renamer",
-  "Version": "1.0.0.0",
+  "Version": "1.1.0.0",
   "Author": "ZoliG1",
-  "Description": "Buttons that add words to the OBS Recording Renamer window.",
+  "Description": "Buttons that add or remove words in the OBS Recording Renamer window.",
   "Category": "Recording Renamer",
   "CategoryIcon": "imgs/category",
   "Icon": "imgs/plugin",
@@ -11,11 +11,21 @@
   "UUID": "com.zolig1.recordingrenamer",
   "SDKVersion": 2,
   "CodePath": "bin/plugin.js",
-  "Nodejs": { "Version": "20" },
-  "Software": { "MinimumVersion": "6.5" },
+  "Nodejs": {
+    "Version": "20"
+  },
+  "Software": {
+    "MinimumVersion": "6.5"
+  },
   "OS": [
-    { "Platform": "windows", "MinimumVersion": "10" },
-    { "Platform": "mac", "MinimumVersion": "12" }
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    },
+    {
+      "Platform": "mac",
+      "MinimumVersion": "12"
+    }
   ],
   "Actions": [
     {
@@ -25,9 +35,35 @@
       "Icon": "imgs/actions/addword/icon",
       "PropertyInspectorPath": "ui/add-word.html",
       "SupportedInMultiActions": true,
-      "Controllers": ["Keypad"],
+      "Controllers": [
+        "Keypad"
+      ],
       "States": [
-        { "Image": "imgs/actions/addword/key", "TitleAlignment": "bottom", "FontSize": 14, "ShowTitle": true }
+        {
+          "Image": "imgs/actions/addword/key",
+          "TitleAlignment": "bottom",
+          "FontSize": 14,
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
+      "UUID": "com.zolig1.recordingrenamer.removeword",
+      "Name": "Remove last word",
+      "Tooltip": "Removes the last word from the name in the OBS rename window",
+      "Icon": "imgs/actions/removeword/icon",
+      "PropertyInspectorPath": "ui/add-word.html",
+      "SupportedInMultiActions": true,
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/removeword/key",
+          "TitleAlignment": "bottom",
+          "FontSize": 12,
+          "ShowTitle": true
+        }
       ]
     }
   ]
