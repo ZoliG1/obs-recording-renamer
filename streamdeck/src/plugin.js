@@ -27,6 +27,7 @@ let globalSettings = { port: "4455", password: "" };
 const contexts = new Map(); // context -> settings
 const ACTION_ADD = "com.zolig1.recordingrenamer.addword";
 const ACTION_REMOVE = "com.zolig1.recordingrenamer.removeword";
+const ACTION_DELETE = "com.zolig1.recordingrenamer.delete";
 
 const sd = new WebSocket(`ws://127.0.0.1:${SD_PORT}`);
 const sdSend = (obj) => sd.readyState === WebSocket.OPEN && sd.send(JSON.stringify(obj));
@@ -66,6 +67,7 @@ sd.on("message", async (raw) => {
 			break;
 		case "keyDown":
 			if (action === ACTION_REMOVE) await sendToObs(context, "remove_word", {});
+			else if (action === ACTION_DELETE) await sendToObs(context, "delete_recording", {});
 			else await onKeyDown(context, (payload && payload.settings) || contexts.get(context) || {});
 			break;
 	}

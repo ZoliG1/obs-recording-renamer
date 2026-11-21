@@ -1,9 +1,9 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Recording Renamer",
-  "Version": "1.1.0.0",
+  "Version": "1.2.0.0",
   "Author": "ZoliG1",
-  "Description": "Buttons that add or remove words in the OBS Recording Renamer window.",
+  "Description": "Buttons that add or remove words in the OBS Recording Renamer window, or delete the recording.",
   "Category": "Recording Renamer",
   "CategoryIcon": "imgs/category",
   "Icon": "imgs/plugin",
@@ -60,6 +60,25 @@
       "States": [
         {
           "Image": "imgs/actions/removeword/key",
+          "TitleAlignment": "bottom",
+          "FontSize": 12,
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
+      "UUID": "com.zolig1.recordingrenamer.delete",
+      "Name": "Delete recording",
+      "Tooltip": "Moves the recording in the OBS rename window to the Recycle Bin (no confirmation). Does nothing while recording.",
+      "Icon": "imgs/actions/delete/icon",
+      "PropertyInspectorPath": "ui/add-word.html",
+      "SupportedInMultiActions": true,
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/delete/key",
           "TitleAlignment": "bottom",
           "FontSize": 12,
           "ShowTitle": true

@@ -20,6 +20,7 @@
   <div class="hint">Added after the name you typed in the OBS rename window, with a space in between.</div>
   </div>
   <div id="removeBox" class="hint" style="margin-left:0;display:none">Removes the last word from the name in the OBS rename window. Press again to remove the next one.</div>
+  <div id="deleteBox" class="hint" style="margin-left:0;display:none">Moves the recording shown in the OBS rename window straight to the Recycle Bin, without asking. Does nothing while a recording is running.</div>
 
   <h4>OBS connection (shared by all buttons)</h4>
   <div class="row"><label for="port">Port</label><input id="port" placeholder="4455"></div>
@@ -38,6 +39,10 @@ function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, action
   if (ai.action === "com.zolig1.recordingrenamer.removeword") {
     $("wordBox").style.display = "none";
     $("removeBox").style.display = "block";
+  }
+  if (ai.action === "com.zolig1.recordingrenamer.delete") {
+    $("wordBox").style.display = "none";
+    $("deleteBox").style.display = "block";
   }
   $("word").value = settings.word || "";
 
