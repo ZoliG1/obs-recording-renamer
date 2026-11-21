@@ -492,6 +492,30 @@ void onDeleteRequest(obs_data_t *, obs_data_t *response, void *)
 		obs_data_set_string(response, "error", task.error);
 }
 
+/* obs-websocket request "save" {} -> {"ok": true/false}
+ * Same as clicking Save in the rename window. */
+void onSaveRequest(obs_data_t *, obs_data_t *response, void *)
+{
+	bool ok = false;
+	obs_queue_task(
+		OBS_TASK_UI,
+		[](void *param) {
+			auto *result = static_cast<bool *>(param);
+			*result = false;
+			if (!g_activeEdit)
+				return;
+			if (auto *dlg = qobject_cast<QDialog *>(g_activeEdit->window())) {
+				dlg->accept();
+				*result = true;
+			}
+		},
+		&ok, true);
+
+	obs_data_set_bool(response, "ok", ok);
+	if (!ok)
+		obs_data_set_string(response, "error", "No rename window is open");
+}
+
 /* ------------------------------------------------------------ settings dialog */
 
 void showSettingsDialog()
@@ -604,6 +628,8 @@ void obs_module_post_load(void)
 		obs_log(LOG_WARNING, "Could not register the remove_word request");
 	if (!obs_websocket_vendor_register_request(g_vendor, "delete_recording", onDeleteRequest, nullptr))
 		obs_log(LOG_WARNING, "Could not register the delete_recording request");
+	if (!obs_websocket_vendor_register_request(g_vendor, "save", onSaveRequest, nullptr))
+		obs_log(LOG_WARNING, "Could not register the save request");
 }
 
 void obs_module_unload(void)
