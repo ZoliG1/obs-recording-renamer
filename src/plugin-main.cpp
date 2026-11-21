@@ -247,6 +247,7 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 						      Qt::WindowStaysOnTopHint);
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	dlg->setWindowTitle(QStringLiteral("Name this recording"));
+	dlg->setProperty("recordingPath", fi.absoluteFilePath());
 	dlg->setMinimumWidth(580);
 
 	auto *title = new QLabel(QStringLiteral("Type a name (it goes in front of the file name):"));
@@ -451,6 +452,46 @@ void onRemoveWordRequest(obs_data_t *, obs_data_t *response, void *)
 		obs_data_set_string(response, "error", "No rename window is open");
 }
 
+/* obs-websocket request "delete_recording" {} -> {"ok": true/false}
+ * Moves the recording shown in the open rename window to the Recycle Bin
+ * without asking. Does nothing while a recording is running. */
+struct DeleteTask {
+	bool ok = false;
+	const char *error = "";
+};
+
+void onDeleteRequest(obs_data_t *, obs_data_t *response, void *)
+{
+	DeleteTask task;
+	obs_queue_task(
+		OBS_TASK_UI,
+		[](void *param) {
+			auto *t = static_cast<DeleteTask *>(param);
+			if (obs_frontend_recording_active()) {
+				t->error = "Recording is still running";
+				return;
+			}
+			if (!g_activeEdit) {
+				t->error = "No rename window is open";
+				return;
+			}
+			auto *dlg = qobject_cast<QDialog *>(g_activeEdit->window());
+			const QString path = dlg ? dlg->property("recordingPath").toString() : QString();
+			if (path.isEmpty()) {
+				t->error = "No recording to delete";
+				return;
+			}
+			trashWithRetry(path, 0);
+			dlg->reject(); /* close the window, no rename */
+			t->ok = true;
+		},
+		&task, true);
+
+	obs_data_set_bool(response, "ok", task.ok);
+	if (!task.ok)
+		obs_data_set_string(response, "error", task.error);
+}
+
 /* ------------------------------------------------------------ settings dialog */
 
 void showSettingsDialog()
@@ -561,6 +602,8 @@ void obs_module_post_load(void)
 		obs_log(LOG_WARNING, "Could not register the add_word request");
 	if (!obs_websocket_vendor_register_request(g_vendor, "remove_word", onRemoveWordRequest, nullptr))
 		obs_log(LOG_WARNING, "Could not register the remove_word request");
+	if (!obs_websocket_vendor_register_request(g_vendor, "delete_recording", onDeleteRequest, nullptr))
+		obs_log(LOG_WARNING, "Could not register the delete_recording request");
 }
 
 void obs_module_unload(void)
