@@ -18,7 +18,13 @@ the Free Software Foundation; either version 2 of the License, or
 #include <plugin-support.h>
 #include "obs-websocket-api.h"
 
+#include <QAbstractItemView>
 #include <QAction>
+#include <QCompleter>
+#include <QDesktopServices>
+#include <QSet>
+#include <QStringListModel>
+#include <QUrl>
 #include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -108,6 +114,78 @@ void saveSettings()
 	obs_data_set_int(d, "timeout", g_settings.timeout);
 	obs_data_save_json_safe(d, settingsPath().c_str(), "tmp", "bak");
 	obs_data_release(d);
+}
+
+/* ------------------------------------------------------------ remembered names
+ * names.txt: one word per line, plain UTF-8 text, editable in Notepad. */
+
+QString namesPath()
+{
+	char *p = obs_module_config_path("names.txt");
+	const QString s = QString::fromUtf8(p ? p : "");
+	bfree(p);
+	return s;
+}
+
+void ensureNamesFile()
+{
+	char *dir = obs_module_config_path("");
+	if (dir) {
+		os_mkdirs(dir);
+		bfree(dir);
+	}
+	const QString path = namesPath();
+	if (!path.isEmpty() && !QFileInfo::exists(path)) {
+		QFile f(path);
+		if (f.open(QIODevice::WriteOnly))
+			f.close(); /* starts empty */
+	}
+}
+
+QStringList loadNames()
+{
+	QFile f(namesPath());
+	if (!f.open(QIODevice::ReadOnly))
+		return {};
+	const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+	QStringList out;
+	QSet<QString> seen;
+	for (const QString &line : lines) {
+		const QString w = line.trimmed();
+		if (w.isEmpty() || seen.contains(w.toLower()))
+			continue;
+		seen.insert(w.toLower());
+		out << w;
+	}
+	out.sort(Qt::CaseInsensitive);
+	return out;
+}
+
+/* Adds every word of a saved name to names.txt (skipping ones already there). */
+void rememberNames(const QString &name)
+{
+	QSet<QString> known;
+	for (const QString &w : loadNames())
+		known.insert(w.toLower());
+
+	QStringList add;
+	for (const QString &w : name.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+		if (!known.contains(w.toLower())) {
+			known.insert(w.toLower());
+			add << w;
+		}
+	}
+	if (add.isEmpty())
+		return;
+
+	ensureNamesFile();
+	QFile f(namesPath());
+	if (!f.open(QIODevice::Append)) {
+		obs_log(LOG_WARNING, "Could not write names.txt");
+		return;
+	}
+	for (const QString &w : add)
+		f.write((w + QStringLiteral("\r\n")).toUtf8());
 }
 
 void setEnabled(bool on)
@@ -253,6 +331,39 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 	auto *title = new QLabel(QStringLiteral("Type a name (it goes in front of the file name):"));
 	auto *edit = new QLineEdit;
 	g_activeEdit = edit;
+
+	/* Suggestions from names.txt for the word being typed. */
+	auto *completer = new QCompleter(new QStringListModel(loadNames(), dlg), dlg);
+	completer->setCaseSensitivity(Qt::CaseInsensitive);
+	completer->setModelSorting(QCompleter::CaseInsensitivelySortedModel);
+	completer->setFilterMode(Qt::MatchStartsWith);
+	completer->setCompletionMode(QCompleter::PopupCompletion);
+	completer->setMaxVisibleItems(8);
+	completer->setWidget(edit);
+
+	QObject::connect(edit, &QLineEdit::textEdited, dlg, [=]() {
+		const QString before = edit->text().left(edit->cursorPosition());
+		const QString word = before.mid(before.lastIndexOf(QLatin1Char(' ')) + 1);
+		if (word.isEmpty()) {
+			completer->popup()->hide();
+			return;
+		}
+		completer->setCompletionPrefix(word);
+		const int count = completer->completionCount();
+		if (count == 0 || (count == 1 && completer->currentCompletion() == word)) {
+			completer->popup()->hide();
+			return;
+		}
+		completer->complete();
+	});
+	QObject::connect(completer, QOverload<const QString &>::of(&QCompleter::activated), dlg,
+			 [=](const QString &choice) {
+				 const QString text = edit->text();
+				 const int pos = edit->cursorPosition();
+				 const int start = int(text.left(pos).lastIndexOf(QLatin1Char(' '))) + 1;
+				 edit->setText(text.left(start) + choice + text.mid(pos));
+				 edit->setCursorPosition(start + int(choice.size()));
+			 });
 	auto *preview = new QLabel;
 	preview->setWordWrap(true);
 	auto *status = new QLabel;
@@ -347,6 +458,7 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 		const QString name = cleanName(edit->text());
 		if (name.isEmpty())
 			return;
+		rememberNames(name);
 		renameWithRetry(fi.absoluteFilePath(), uniqueTarget(fi, name), 0);
 	});
 
@@ -545,6 +657,13 @@ void showSettingsDialog()
 	form->addRow(QStringLiteral("Timeout:"), seconds);
 	form->addRow(test);
 
+	auto *openNames = new QPushButton(QStringLiteral("Open remembered names (names.txt)"));
+	QObject::connect(openNames, &QPushButton::clicked, &dlg, []() {
+		ensureNamesFile();
+		QDesktopServices::openUrl(QUrl::fromLocalFile(namesPath()));
+	});
+	form->addRow(openNames);
+
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
 	QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
 	QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
@@ -604,6 +723,7 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 bool obs_module_load(void)
 {
 	loadSettings();
+	ensureNamesFile();
 
 	auto *action = static_cast<QAction *>(obs_frontend_add_tools_menu_qaction("Recording Renamer Settings"));
 	QObject::connect(action, &QAction::triggered, []() { showSettingsDialog(); });
