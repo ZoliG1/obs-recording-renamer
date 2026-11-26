@@ -70,10 +70,15 @@ struct Settings {
 	bool useTimeout = true;
 	int timeout = 20;
 	bool useMonitor = true; /* fill in the name detected by the Watch Dogs monitor */
+	bool autoStart = false; /* start recording when someone invades you */
+	bool autoStop = false;  /* stop recording when that invasion ends */
 };
 
 Settings g_settings;
 QPointer<QCheckBox> g_dockCheck;
+QPointer<QCheckBox> g_dockAutoStart;
+QPointer<QCheckBox> g_dockAutoStop;
+QPointer<QCheckBox> g_dockMonitor;
 QPointer<QLineEdit> g_activeEdit; /* name box of the rename window that is open now */
 obs_websocket_vendor g_vendor = nullptr;
 double g_recordingStart = 0; /* Unix seconds, 0 = unknown */
@@ -97,10 +102,14 @@ void loadSettings()
 	obs_data_set_default_bool(d, "use_timeout", true);
 	obs_data_set_default_int(d, "timeout", 20);
 	obs_data_set_default_bool(d, "use_monitor", true);
+	obs_data_set_default_bool(d, "auto_start", false);
+	obs_data_set_default_bool(d, "auto_stop", false);
 	g_settings.enabled = obs_data_get_bool(d, "enabled");
 	g_settings.useTimeout = obs_data_get_bool(d, "use_timeout");
 	g_settings.timeout = (int)obs_data_get_int(d, "timeout");
 	g_settings.useMonitor = obs_data_get_bool(d, "use_monitor");
+	g_settings.autoStart = obs_data_get_bool(d, "auto_start");
+	g_settings.autoStop = obs_data_get_bool(d, "auto_stop");
 	if (g_settings.timeout < 1)
 		g_settings.timeout = 20;
 	obs_data_release(d);
@@ -118,6 +127,8 @@ void saveSettings()
 	obs_data_set_bool(d, "use_timeout", g_settings.useTimeout);
 	obs_data_set_int(d, "timeout", g_settings.timeout);
 	obs_data_set_bool(d, "use_monitor", g_settings.useMonitor);
+	obs_data_set_bool(d, "auto_start", g_settings.autoStart);
+	obs_data_set_bool(d, "auto_stop", g_settings.autoStop);
 	obs_data_save_json_safe(d, settingsPath().c_str(), "tmp", "bak");
 	obs_data_release(d);
 }
@@ -249,6 +260,18 @@ void setEnabled(bool on)
 		g_dockCheck->setChecked(on);
 	}
 	obs_log(LOG_INFO, "Recording Renamer %s", on ? "enabled" : "disabled");
+}
+
+/* Changes one on/off setting, saves it and updates its dock checkbox. */
+void setFlag(bool &flag, QCheckBox *dockBox, bool on, const char *what)
+{
+	flag = on;
+	saveSettings();
+	if (dockBox && dockBox->isChecked() != on) {
+		QSignalBlocker block(dockBox);
+		dockBox->setChecked(on);
+	}
+	obs_log(LOG_INFO, "%s %s", what, on ? "on" : "off");
 }
 
 QWidget *mainWindow()
@@ -723,6 +746,104 @@ void onSaveRequest(obs_data_t *, obs_data_t *response, void *)
 		obs_data_set_string(response, "error", "No rename window is open");
 }
 
+/* ------------------------------------------------------------ auto record
+ * Watches wd_sessions.txt once a second. A new running session whose label
+ * ends in "invader" (any kind: hacking, tailing, friend list, retaliation)
+ * starts the recording; when that session gets an end time the recording
+ * stops. Skips never create a session, so they never record. */
+
+struct MonitorSession {
+	QString id;
+	double start = 0;
+	double end = 0;
+	QString label;
+};
+
+QList<MonitorSession> readMonitorSessions()
+{
+	QList<MonitorSession> out;
+	QFile f(monitorSessionsPath());
+	if (!f.open(QIODevice::ReadOnly))
+		return out;
+	for (const QString &line : QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'))) {
+		const QStringList parts = line.trimmed().split(QLatin1Char('\t'));
+		if (parts.size() != 3)
+			continue;
+		bool ok1 = false, ok2 = false;
+		MonitorSession m;
+		m.id = parts[0];
+		m.start = parts[0].toDouble(&ok1);
+		m.end = parts[1].toDouble(&ok2);
+		m.label = parts[2].trimmed();
+		if (ok1 && ok2)
+			out << m;
+	}
+	return out;
+}
+
+bool isInvasion(const MonitorSession &m)
+{
+	return m.label.endsWith(QStringLiteral(" invader"), Qt::CaseInsensitive);
+}
+
+QSet<QString> g_seenSessions;   /* sessions already handled (or there before OBS started) */
+QString g_recordingFor;         /* session the current recording is following, "" = none */
+bool g_autoStarted = false;     /* this recording was started by us */
+bool g_watcherPrimed = false;
+QSet<QString> g_endedSessions;  /* invasions we saw end (a reconnect re-opens them) */
+
+void checkMonitorSessions()
+{
+	if (!g_settings.autoStart && !g_settings.autoStop) {
+		g_watcherPrimed = false; /* re-read the file fresh when turned on again */
+		return;
+	}
+	const QList<MonitorSession> sessions = readMonitorSessions();
+
+	if (!g_watcherPrimed) {
+		/* Only react to invasions that begin from now on. */
+		g_seenSessions.clear();
+		for (const MonitorSession &m : sessions)
+			g_seenSessions.insert(m.id);
+		g_watcherPrimed = true;
+		return;
+	}
+
+	const double now = nowSeconds();
+	for (const MonitorSession &m : sessions) {
+		if (!isInvasion(m) || m.end > 0)
+			continue;
+		/* a new invasion that is still running, or one that came back after a reconnect */
+		const bool reopened = g_endedSessions.remove(m.id);
+		if (!reopened && (g_seenSessions.contains(m.id) || now - m.start > 120))
+			continue;
+		g_seenSessions.insert(m.id);
+		g_recordingFor = m.id;
+		if (obs_frontend_recording_active()) {
+			obs_log(LOG_INFO, "Invasion started (%s) - already recording", m.label.toUtf8().constData());
+		} else if (g_settings.autoStart) {
+			obs_log(LOG_INFO, "Invasion started (%s) - starting recording", m.label.toUtf8().constData());
+			g_autoStarted = true;
+			obs_frontend_recording_start();
+		}
+	}
+
+	if (g_recordingFor.isEmpty())
+		return;
+	for (const MonitorSession &m : sessions) {
+		if (m.id != g_recordingFor || m.end <= 0)
+			continue;
+		obs_log(LOG_INFO, "Invasion ended (%s)", m.label.toUtf8().constData());
+		g_endedSessions.insert(m.id);
+		g_recordingFor.clear();
+		if (g_settings.autoStop && obs_frontend_recording_active()) {
+			obs_log(LOG_INFO, "Stopping recording");
+			obs_frontend_recording_stop();
+		}
+		break;
+	}
+}
+
 /* ------------------------------------------------------------ settings dialog */
 
 void showSettingsDialog()
@@ -747,6 +868,11 @@ void showSettingsDialog()
 	useMonitor->setChecked(g_settings.useMonitor);
 	useMonitor->setToolTip(monitorSessionsPath());
 
+	auto *autoStart = new QCheckBox(QStringLiteral("Start recording when someone invades me (Watch Dogs monitor)"));
+	autoStart->setChecked(g_settings.autoStart);
+	auto *autoStop = new QCheckBox(QStringLiteral("Stop recording when the invasion ends"));
+	autoStop->setChecked(g_settings.autoStop);
+
 	auto *test = new QPushButton(QStringLiteral("Test dialog on last recording"));
 	QObject::connect(test, &QPushButton::clicked, &dlg, []() { showDialogForLastRecording(false); });
 
@@ -755,6 +881,8 @@ void showSettingsDialog()
 	form->addRow(useTimeout);
 	form->addRow(QStringLiteral("Timeout:"), seconds);
 	form->addRow(useMonitor);
+	form->addRow(autoStart);
+	form->addRow(autoStop);
 	form->addRow(test);
 
 	auto *openNames = new QPushButton(QStringLiteral("Open remembered names (names.txt)"));
@@ -775,7 +903,9 @@ void showSettingsDialog()
 	if (dlg.exec() == QDialog::Accepted) {
 		g_settings.useTimeout = useTimeout->isChecked();
 		g_settings.timeout = seconds->value();
-		g_settings.useMonitor = useMonitor->isChecked();
+		setFlag(g_settings.useMonitor, g_dockMonitor, useMonitor->isChecked(), "Name by WDmon");
+		setFlag(g_settings.autoStart, g_dockAutoStart, autoStart->isChecked(), "Auto start recording");
+		setFlag(g_settings.autoStop, g_dockAutoStop, autoStop->isChecked(), "Auto stop recording");
 		setEnabled(enabled->isChecked()); /* also saves */
 	}
 }
@@ -791,8 +921,32 @@ void createDock()
 	QObject::connect(check, &QCheckBox::toggled, [](bool on) { setEnabled(on); });
 	g_dockCheck = check;
 
+	auto *startBox = new QCheckBox(QStringLiteral("Auto rec start (invaded)"), widget);
+	startBox->setChecked(g_settings.autoStart);
+	startBox->setToolTip(QStringLiteral("Start recording when someone invades you (needs wd_monitor.py)"));
+	QObject::connect(startBox, &QCheckBox::toggled,
+			 [](bool on) { setFlag(g_settings.autoStart, g_dockAutoStart, on, "Auto start recording"); });
+	g_dockAutoStart = startBox;
+
+	auto *stopBox = new QCheckBox(QStringLiteral("Auto rec stop (invaded)"), widget);
+	stopBox->setChecked(g_settings.autoStop);
+	stopBox->setToolTip(QStringLiteral("Stop recording when the invasion ends (needs wd_monitor.py)"));
+	QObject::connect(stopBox, &QCheckBox::toggled,
+			 [](bool on) { setFlag(g_settings.autoStop, g_dockAutoStop, on, "Auto stop recording"); });
+	g_dockAutoStop = stopBox;
+
+	auto *monBox = new QCheckBox(QStringLiteral("Name by WDmon"), widget);
+	monBox->setChecked(g_settings.useMonitor);
+	monBox->setToolTip(QStringLiteral("Fill in the name detected by the Watch Dogs monitor"));
+	QObject::connect(monBox, &QCheckBox::toggled,
+			 [](bool on) { setFlag(g_settings.useMonitor, g_dockMonitor, on, "Name by WDmon"); });
+	g_dockMonitor = monBox;
+
 	auto *layout = new QVBoxLayout(widget);
 	layout->addWidget(check);
+	layout->addWidget(startBox);
+	layout->addWidget(stopBox);
+	layout->addWidget(monBox);
 	layout->addStretch(1);
 
 	if (!obs_frontend_add_dock_by_id(DOCK_ID, "Scripts", widget))
@@ -806,6 +960,10 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 	if (event == OBS_FRONTEND_EVENT_RECORDING_STARTED) {
 		g_recordingStart = nowSeconds();
 		return;
+	}
+	if (event == OBS_FRONTEND_EVENT_RECORDING_STOPPED) {
+		g_autoStarted = false;
+		g_recordingFor.clear();
 	}
 	if (event != OBS_FRONTEND_EVENT_RECORDING_STOPPED || !g_settings.enabled)
 		return;
@@ -837,6 +995,11 @@ bool obs_module_load(void)
 	QObject::connect(action, &QAction::triggered, []() { showSettingsDialog(); });
 
 	createDock();
+
+	auto *watcher = new QTimer(mainWindow());
+	watcher->setInterval(1000);
+	QObject::connect(watcher, &QTimer::timeout, []() { checkMonitorSessions(); });
+	watcher->start();
 	obs_frontend_add_event_callback(onFrontendEvent, nullptr);
 
 	obs_log(LOG_INFO, "Recording Renamer loaded (version %s)", PLUGIN_VERSION);

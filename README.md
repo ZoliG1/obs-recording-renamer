@@ -6,6 +6,7 @@ After you stop a recording, a small window asks for a name and puts it in front 
  - PS4 - 19.11.2026 19-48-55.mp4  ->  Johnny hack - PS4 - 19.11.2026 19-48-55.mp4
 ```
 
+- Watch Dogs monitor: can start recording when someone invades you and stop it when the invasion ends (dock checkboxes "Auto rec start (invaded)" / "Auto rec stop (invaded)").
 - Watch Dogs monitor: fills in the detected name (e.g. "drsimbl invader") from wd_monitor.py; saves it when the countdown ends unless you change it.
 - Remembers names: typing shows a dropdown of matching names saved before (stored in names.txt).
 - Red undo arrow = remove the last word (press again for the next one).
