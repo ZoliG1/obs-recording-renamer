@@ -26,6 +26,7 @@ the Free Software Foundation; either version 2 of the License, or
 #include <QStringListModel>
 #include <QUrl>
 #include <QCheckBox>
+#include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -68,12 +69,14 @@ struct Settings {
 	bool enabled = true;
 	bool useTimeout = true;
 	int timeout = 20;
+	bool useMonitor = true; /* fill in the name detected by the Watch Dogs monitor */
 };
 
 Settings g_settings;
 QPointer<QCheckBox> g_dockCheck;
 QPointer<QLineEdit> g_activeEdit; /* name box of the rename window that is open now */
 obs_websocket_vendor g_vendor = nullptr;
+double g_recordingStart = 0; /* Unix seconds, 0 = unknown */
 
 /* ------------------------------------------------------------ settings file */
 
@@ -93,9 +96,11 @@ void loadSettings()
 	obs_data_set_default_bool(d, "enabled", true);
 	obs_data_set_default_bool(d, "use_timeout", true);
 	obs_data_set_default_int(d, "timeout", 20);
+	obs_data_set_default_bool(d, "use_monitor", true);
 	g_settings.enabled = obs_data_get_bool(d, "enabled");
 	g_settings.useTimeout = obs_data_get_bool(d, "use_timeout");
 	g_settings.timeout = (int)obs_data_get_int(d, "timeout");
+	g_settings.useMonitor = obs_data_get_bool(d, "use_monitor");
 	if (g_settings.timeout < 1)
 		g_settings.timeout = 20;
 	obs_data_release(d);
@@ -112,6 +117,7 @@ void saveSettings()
 	obs_data_set_bool(d, "enabled", g_settings.enabled);
 	obs_data_set_bool(d, "use_timeout", g_settings.useTimeout);
 	obs_data_set_int(d, "timeout", g_settings.timeout);
+	obs_data_set_bool(d, "use_monitor", g_settings.useMonitor);
 	obs_data_save_json_safe(d, settingsPath().c_str(), "tmp", "bak");
 	obs_data_release(d);
 }
@@ -186,6 +192,52 @@ void rememberNames(const QString &name)
 	}
 	for (const QString &w : add)
 		f.write((w + QStringLiteral("\r\n")).toUtf8());
+}
+
+/* ------------------------------------------------------------ Watch Dogs monitor
+ * wd_monitor.py writes %USERPROFILE%\wd_monitor\wd_sessions.txt, one session per
+ * line: "start<TAB>end<TAB>label" (Unix seconds, end 0 while still running). */
+
+QString monitorSessionsPath()
+{
+	return QDir::homePath() + QStringLiteral("/wd_monitor/wd_sessions.txt");
+}
+
+double nowSeconds()
+{
+	return double(QDateTime::currentMSecsSinceEpoch()) / 1000.0;
+}
+
+/* Label of the last session that overlapped the recording, or "" if none. */
+QString detectedLabel(double recStart, double recEnd)
+{
+	if (!g_settings.useMonitor)
+		return {};
+	QFile f(monitorSessionsPath());
+	if (!f.open(QIODevice::ReadOnly))
+		return {};
+	const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+	if (recStart <= 0)
+		recStart = recEnd - 3600; /* start unknown: look at the last hour */
+
+	double bestStart = -1;
+	QString best;
+	for (const QString &line : lines) {
+		const QStringList parts = line.trimmed().split(QLatin1Char('\t'));
+		if (parts.size() != 3)
+			continue;
+		bool ok1 = false, ok2 = false;
+		const double start = parts[0].toDouble(&ok1);
+		const double end = parts[1].toDouble(&ok2);
+		if (!ok1 || !ok2)
+			continue;
+		const bool overlaps = start <= recEnd && (end <= 0 || end >= recStart);
+		if (overlaps && start >= bestStart) {
+			bestStart = start;
+			best = parts[2].trimmed();
+		}
+	}
+	return best;
 }
 
 void setEnabled(bool on)
@@ -313,7 +365,7 @@ QIcon undoIcon()
 
 /* ------------------------------------------------------------ rename dialog */
 
-void showRenameDialog(const QString &path, bool allowTimeout = true)
+void showRenameDialog(const QString &path, bool allowTimeout = true, double recStart = 0, double recEnd = 0)
 {
 	const QFileInfo fi(path);
 	if (!fi.exists()) {
@@ -367,6 +419,8 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 	auto *preview = new QLabel;
 	preview->setWordWrap(true);
 	auto *status = new QLabel;
+	auto *detected = new QLabel;
+	detected->setVisible(false);
 
 	auto *buttons = new QDialogButtonBox;
 	QPushButton *save = buttons->addButton(QStringLiteral("Save"), QDialogButtonBox::AcceptRole);
@@ -398,6 +452,7 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 	auto *layout = new QVBoxLayout(dlg);
 	layout->addWidget(title);
 	layout->addWidget(edit);
+	layout->addWidget(detected);
 	layout->addWidget(preview);
 	layout->addWidget(status);
 	layout->addSpacing(8);
@@ -405,12 +460,20 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 
 	const bool useTimeout = allowTimeout && g_settings.useTimeout && g_settings.timeout > 0;
 	auto remaining = std::make_shared<int>(g_settings.timeout);
+	auto autoSetting = std::make_shared<bool>(false); /* text is being filled in by the monitor */
+	auto userTouched = std::make_shared<bool>(false); /* user (or Stream Deck) changed the text */
+	auto autoText = std::make_shared<QString>();
+	if (recEnd <= 0)
+		recEnd = nowSeconds();
 	auto *timer = new QTimer(dlg);
 	timer->setInterval(1000);
 
 	auto updateStatus = [=]() {
 		if (!useTimeout)
 			status->setText(QStringLiteral("Enter = save   Esc = keep original name"));
+		else if (timer->isActive() && !autoText->isEmpty() && !*userTouched)
+			status->setText(QStringLiteral("Saving the detected name in %1 s - start typing to change it")
+						.arg(*remaining));
 		else if (timer->isActive())
 			status->setText(
 				QStringLiteral("Closing in %1 s - start typing to keep this open").arg(*remaining));
@@ -428,14 +491,20 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 	QObject::connect(timer, &QTimer::timeout, dlg, [=]() {
 		if (--*remaining <= 0) {
 			timer->stop();
-			dlg->reject();
+			if (!*userTouched && !cleanName(edit->text()).isEmpty())
+				dlg->accept(); /* untouched detected name: save it */
+			else
+				dlg->reject();
 		} else {
 			updateStatus();
 		}
 	});
 	QObject::connect(edit, &QLineEdit::textChanged, dlg, [=](const QString &text) {
-		if (!text.isEmpty() && timer->isActive())
-			timer->stop();
+		if (!*autoSetting) {
+			*userTouched = true;
+			if (!text.isEmpty() && timer->isActive())
+				timer->stop();
+		}
 		updatePreview();
 		updateStatus();
 	});
@@ -461,6 +530,32 @@ void showRenameDialog(const QString &path, bool allowTimeout = true)
 		rememberNames(name);
 		renameWithRetry(fi.absoluteFilePath(), uniqueTarget(fi, name), 0);
 	});
+
+	/* Name detected by the Watch Dogs monitor. It can still change for a few
+	 * seconds (the invader's name often arrives late), so keep checking while
+	 * the window is open, as long as the user hasn't changed the text. */
+	auto applyDetected = [=]() {
+		if (*userTouched)
+			return;
+		const QString label = cleanName(detectedLabel(recStart, recEnd));
+		if (label.isEmpty() || label == *autoText)
+			return;
+		*autoText = label;
+		*autoSetting = true;
+		edit->setText(label);
+		edit->setCursorPosition(int(label.size()));
+		*autoSetting = false;
+		detected->setText(QStringLiteral("Detected by the Watch Dogs monitor: %1").arg(label));
+		detected->setVisible(true);
+		updateStatus();
+	};
+	applyDetected();
+	if (g_settings.useMonitor) {
+		auto *poll = new QTimer(dlg);
+		poll->setInterval(1000);
+		QObject::connect(poll, &QTimer::timeout, dlg, applyDetected);
+		poll->start();
+	}
 
 	if (useTimeout)
 		timer->start();
@@ -648,6 +743,10 @@ void showSettingsDialog()
 	seconds->setEnabled(g_settings.useTimeout);
 	QObject::connect(useTimeout, &QCheckBox::toggled, seconds, &QWidget::setEnabled);
 
+	auto *useMonitor = new QCheckBox(QStringLiteral("Fill in the name detected by the Watch Dogs monitor"));
+	useMonitor->setChecked(g_settings.useMonitor);
+	useMonitor->setToolTip(monitorSessionsPath());
+
 	auto *test = new QPushButton(QStringLiteral("Test dialog on last recording"));
 	QObject::connect(test, &QPushButton::clicked, &dlg, []() { showDialogForLastRecording(false); });
 
@@ -655,6 +754,7 @@ void showSettingsDialog()
 	form->addRow(enabled);
 	form->addRow(useTimeout);
 	form->addRow(QStringLiteral("Timeout:"), seconds);
+	form->addRow(useMonitor);
 	form->addRow(test);
 
 	auto *openNames = new QPushButton(QStringLiteral("Open remembered names (names.txt)"));
@@ -675,6 +775,7 @@ void showSettingsDialog()
 	if (dlg.exec() == QDialog::Accepted) {
 		g_settings.useTimeout = useTimeout->isChecked();
 		g_settings.timeout = seconds->value();
+		g_settings.useMonitor = useMonitor->isChecked();
 		setEnabled(enabled->isChecked()); /* also saves */
 	}
 }
@@ -702,8 +803,15 @@ void createDock()
 
 void onFrontendEvent(enum obs_frontend_event event, void *)
 {
+	if (event == OBS_FRONTEND_EVENT_RECORDING_STARTED) {
+		g_recordingStart = nowSeconds();
+		return;
+	}
 	if (event != OBS_FRONTEND_EVENT_RECORDING_STOPPED || !g_settings.enabled)
 		return;
+	const double recStart = g_recordingStart;
+	const double recEnd = nowSeconds();
+	g_recordingStart = 0;
 
 	char *p = obs_frontend_get_last_recording();
 	if (!p || !*p) {
@@ -715,7 +823,7 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 	bfree(p);
 
 	/* Let OBS finish its own stop handling first. */
-	QTimer::singleShot(300, [path]() { showRenameDialog(path); });
+	QTimer::singleShot(300, [path, recStart, recEnd]() { showRenameDialog(path, true, recStart, recEnd); });
 }
 
 } // namespace
