@@ -79,6 +79,8 @@ QPointer<QCheckBox> g_dockCheck;
 QPointer<QCheckBox> g_dockAutoStart;
 QPointer<QCheckBox> g_dockAutoStop;
 QPointer<QCheckBox> g_dockMonitor;
+QPointer<QPushButton> g_dockDisconnect;
+QPointer<QLabel> g_dockStatus;
 QPointer<QLineEdit> g_activeEdit; /* name box of the rename window that is open now */
 obs_websocket_vendor g_vendor = nullptr;
 double g_recordingStart = 0; /* Unix seconds, 0 = unknown */
@@ -783,7 +785,8 @@ QList<MonitorSession> readMonitorSessions()
 
 bool isInvasion(const MonitorSession &m)
 {
-	return m.label.endsWith(QStringLiteral(" invader"), Qt::CaseInsensitive);
+	/* "name invader", "name invader (hack)", "name invader (tailing)" */
+	return m.label.contains(QStringLiteral(" invader"), Qt::CaseInsensitive);
 }
 
 QSet<QString> g_seenSessions;   /* sessions already handled (or there before OBS started) */
@@ -792,8 +795,82 @@ bool g_autoStarted = false;     /* this recording was started by us */
 bool g_watcherPrimed = false;
 QSet<QString> g_endedSessions;  /* invasions we saw end (a reconnect re-opens them) */
 
+/* ------------------------------------------------------------ disconnect
+ * The dock button (or Stream Deck) leaves "disconnect" in command.txt; the
+ * monitor turns the PS4's switch port off for a few seconds and answers in
+ * command_result.txt ("time<TAB>ok|error<TAB>text"). */
+
+double g_disconnectAsked = 0;
+
+void setDockStatus(const QString &text, bool error = false)
+{
+	if (!g_dockStatus)
+		return;
+	g_dockStatus->setText(text);
+	g_dockStatus->setStyleSheet(error ? QStringLiteral("color: #E8A74A;") : QString());
+	g_dockStatus->setVisible(!text.isEmpty());
+}
+
+bool requestDisconnect()
+{
+	const QString dir = QDir::homePath() + QStringLiteral("/wd_monitor");
+	QDir().mkpath(dir);
+	QFile f(dir + QStringLiteral("/command.txt"));
+	if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+		setDockStatus(QStringLiteral("Could not write command.txt"), true);
+		return false;
+	}
+	f.write("disconnect\n");
+	f.close();
+	g_disconnectAsked = nowSeconds();
+	setDockStatus(QStringLiteral("Disconnecting..."));
+	if (g_dockDisconnect)
+		g_dockDisconnect->setEnabled(false);
+	obs_log(LOG_INFO, "Disconnect requested");
+	return true;
+}
+
+void checkDisconnectResult()
+{
+	if (g_disconnectAsked <= 0)
+		return;
+	QFile f(QDir::homePath() + QStringLiteral("/wd_monitor/command_result.txt"));
+	if (f.open(QIODevice::ReadOnly)) {
+		const QStringList parts = QString::fromUtf8(f.readAll()).trimmed().split(QLatin1Char('\t'));
+		if (parts.size() == 3 && parts[0].toDouble() >= g_disconnectAsked - 1) {
+			g_disconnectAsked = 0;
+			const bool ok = parts[1] == QStringLiteral("ok");
+			setDockStatus(ok ? QStringLiteral("Disconnected") : parts[2], !ok);
+			if (g_dockDisconnect)
+				g_dockDisconnect->setEnabled(true);
+			QTimer::singleShot(ok ? 8000 : 20000, []() {
+				if (g_disconnectAsked <= 0)
+					setDockStatus(QString());
+			});
+			return;
+		}
+	}
+	if (nowSeconds() - g_disconnectAsked > 15) {
+		g_disconnectAsked = 0;
+		QFile::remove(QDir::homePath() + QStringLiteral("/wd_monitor/command.txt"));
+		setDockStatus(QStringLiteral("No answer - is wd_monitor running?"), true);
+		if (g_dockDisconnect)
+			g_dockDisconnect->setEnabled(true);
+	}
+}
+
+/* obs-websocket request "disconnect" {} -> {"ok": true/false} (Stream Deck) */
+void onDisconnectRequest(obs_data_t *, obs_data_t *response, void *)
+{
+	bool ok = false;
+	obs_queue_task(
+		OBS_TASK_UI, [](void *param) { *static_cast<bool *>(param) = requestDisconnect(); }, &ok, true);
+	obs_data_set_bool(response, "ok", ok);
+}
+
 void checkMonitorSessions()
 {
+	checkDisconnectResult();
 	if (!g_settings.autoStart && !g_settings.autoStop) {
 		g_watcherPrimed = false; /* re-read the file fresh when turned on again */
 		return;
@@ -942,11 +1019,25 @@ void createDock()
 			 [](bool on) { setFlag(g_settings.useMonitor, g_dockMonitor, on, "Name by WDmon"); });
 	g_dockMonitor = monBox;
 
+	auto *disconnect = new QPushButton(QStringLiteral("Disconnect session"), widget);
+	disconnect->setToolTip(QStringLiteral("Briefly cuts the PS4's network port on the switch, which drops the "
+					      "current Watch Dogs online session (needs wd_monitor.py with the switch set up)"));
+	QObject::connect(disconnect, &QPushButton::clicked, []() { requestDisconnect(); });
+	g_dockDisconnect = disconnect;
+
+	auto *status = new QLabel(widget);
+	status->setWordWrap(true);
+	status->setVisible(false);
+	g_dockStatus = status;
+
 	auto *layout = new QVBoxLayout(widget);
 	layout->addWidget(check);
 	layout->addWidget(startBox);
 	layout->addWidget(stopBox);
 	layout->addWidget(monBox);
+	layout->addSpacing(6);
+	layout->addWidget(disconnect);
+	layout->addWidget(status);
 	layout->addStretch(1);
 
 	if (!obs_frontend_add_dock_by_id(DOCK_ID, "Scripts", widget))
@@ -1021,6 +1112,8 @@ void obs_module_post_load(void)
 		obs_log(LOG_WARNING, "Could not register the delete_recording request");
 	if (!obs_websocket_vendor_register_request(g_vendor, "save", onSaveRequest, nullptr))
 		obs_log(LOG_WARNING, "Could not register the save request");
+	if (!obs_websocket_vendor_register_request(g_vendor, "disconnect", onDisconnectRequest, nullptr))
+		obs_log(LOG_WARNING, "Could not register the disconnect request");
 }
 
 void obs_module_unload(void)
